@@ -46,6 +46,7 @@ class Controls:
     self.steer_limited_by_safety = False
     self.curvature = 0.0
     self.desired_curvature = 0.0
+    self.below_steer_speed = False
 
     self.pose_calibrator = PoseCalibrator()
     self.calibrated_pose: Pose | None = None
@@ -96,7 +97,18 @@ class Controls:
     CC.enabled = self.sm['selfdriveState'].enabled
 
     # Check which actuators can be enabled
-    standstill = abs(CS.vEgo) <= max(self.CP.minSteerSpeed, 0.3) or CS.standstill
+    # Fork: the minSteerSpeed gate has hysteresis. latActive drops at minSteerSpeed and re-arms
+    # 1.0 m/s above it, the band car_specific.py already uses for the belowSteerSpeed alert.
+    # Upstream clears latActive at exactly minSteerSpeed; cruising on that gate flapped it four
+    # times in 110 ms on the Renegade (AH-173). Cars without a speed gate are unaffected.
+    if self.CP.minSteerSpeed > 0.:
+      if abs(CS.vEgo) <= self.CP.minSteerSpeed:
+        self.below_steer_speed = True
+      elif abs(CS.vEgo) > self.CP.minSteerSpeed + 1.0:
+        self.below_steer_speed = False
+    else:
+      self.below_steer_speed = False
+    standstill = abs(CS.vEgo) <= 0.3 or self.below_steer_speed or CS.standstill
     CC.latActive = self.sm['selfdriveState'].active and not CS.steerFaultTemporary and not CS.steerFaultPermanent and \
                    (not standstill or self.CP.steerAtStandstill)
     CC.longActive = CC.enabled and not any(e.overrideLongitudinal for e in self.sm['onroadEvents']) and self.CP.openpilotLongitudinalControl
