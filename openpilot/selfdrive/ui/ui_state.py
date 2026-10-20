@@ -107,6 +107,13 @@ class UIState:
   def engaged(self) -> bool:
     return self.started and self.sm["selfdriveState"].enabled
 
+  @property
+  def nag_counting(self) -> bool:
+    """Fork, Chrysler SUSW (#1854): the hands-off nag pre-warning sees calm torque with its timer running,
+    so the car is probably timing a nag. Drives the orange wheel icon. Always False on other cars."""
+    nag = self.sm["carState"].nagPrewarning
+    return bool(nag.calm and nag.quiet > 0.)
+
   def is_onroad(self) -> bool:
     return self.started
 

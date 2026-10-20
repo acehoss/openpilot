@@ -89,6 +89,7 @@ struct OnroadEvent @0xc4fa6047f024e718 {
     stockAeb @52;
     stockLkas @98;
     lateralManeuver @99;
+    nagPrewarning @100;  # fork, Chrysler SUSW: hands-off nag pre-warning chime (Redmine #1854)
     ldw @53;
     carUnrecognized @54;
     invalidLkasSetting @55;
