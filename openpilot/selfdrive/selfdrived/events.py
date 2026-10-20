@@ -616,6 +616,16 @@ EVENTS: dict[int, dict[str, Alert | AlertCallbackType]] = {
       Priority.LOW, VisualAlert.none, AudibleAlert.none, .1),
   },
 
+  # Fork, Chrysler SUSW (Redmine #1854): one soft chime about a second before the car's own hands-off
+  # nag would fire. Sound only - no text, no visual; the wheel icon carries the visual state.
+  EventName.nagPrewarning: {
+    ET.WARNING: Alert(
+      "",
+      "",
+      AlertStatus.normal, AlertSize.none,
+      Priority.LOW, VisualAlert.none, AudibleAlert.prompt, .2),
+  },
+
   EventName.steerSaturated: {
     ET.WARNING: Alert(
       "Take Control",

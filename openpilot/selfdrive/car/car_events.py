@@ -37,6 +37,10 @@ class CarEvents:
       if self.low_speed_alert:
         events.add(EventName.belowSteerSpeed)
 
+      # SUSW hands-off nag pre-warning: carstate raises chime on exactly one frame (#1854)
+      if CS.nagPrewarning.chime:
+        events.add(EventName.nagPrewarning)
+
     elif self.CP.brand == 'honda':
       if self.CP.pcmCruise and CS.vEgo < self.CP.minEnableSpeed:
         events.add(EventName.belowEngageSpeed)
