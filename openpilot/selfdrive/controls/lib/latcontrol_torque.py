@@ -3,6 +3,7 @@ import numpy as np
 from collections import deque
 
 from openpilot.cereal import log
+from opendbc.car.chrysler.values import SUSW_CARS
 from opendbc.car.lateral import FRICTION_THRESHOLD, get_friction
 from openpilot.common.constants import ACCELERATION_DUE_TO_GRAVITY
 from openpilot.common.filter_simple import FirstOrderFilter
@@ -32,13 +33,22 @@ JERK_GAIN = 0.3
 LAT_ACCEL_REQUEST_BUFFER_SECONDS = 1.0
 VERSION = 1
 
+# Fork: the SUSW column (Renegade) sticks and releases under the upstream KP schedule. Hands-off on a
+# curve at 37 mph it limit-cycles at ~1 Hz, 15 deg p2p: the column holds while the command ramps to
+# STEER_MAX, lets go, overshoots to 1.8 m/s2 against 1.0 requested, and the P term (KP ~1.9 there)
+# reverses the command before the applied torque has even caught up (#1879, route 0000025e seg 6).
+# Hands on the wheel damp it; so does less proportional gain. Scales KP only, KI and the
+# feedforward are untouched, other cars are unaffected.
+SUSW_KP_SCALE = 0.6
+
 class LatControlTorque(LatControl):
   def __init__(self, CP, CI, dt):
     super().__init__(CP, CI, dt)
     self.torque_params = CP.lateralTuning.torque.as_builder()
     self.torque_from_lateral_accel = CI.torque_from_lateral_accel()
     self.lateral_accel_from_torque = CI.lateral_accel_from_torque()
-    self.pid = PIDController([INTERP_SPEEDS, KP_INTERP], KI, rate=1/self.dt)
+    kp_scale = SUSW_KP_SCALE if CP.carFingerprint in SUSW_CARS else 1.0
+    self.pid = PIDController([INTERP_SPEEDS, [k * kp_scale for k in KP_INTERP]], KI, rate=1/self.dt)
     self.update_limits()
     self.steering_angle_deadzone_deg = self.torque_params.steeringAngleDeadzoneDeg
     self.lat_accel_request_buffer_len = int(LAT_ACCEL_REQUEST_BUFFER_SECONDS / self.dt)
