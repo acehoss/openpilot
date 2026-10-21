@@ -249,8 +249,9 @@ class HudRenderer(Widget):
 
     # color and draw. Fork (#1854): the plain wheel is tinted orange while the SUSW hands-off nag
     # pre-warning is counting with calm torque, i.e. while the car is probably timing a nag.
-    tint = COLORS.NAG_COUNTING if not self._show_wheel_critical and ui_state.nag_counting else COLORS.WHITE
-    color = rl.Color(tint.r, tint.g, tint.b, int(self._wheel_alpha_filter.x))
+    # rl.WHITE is a plain tuple on the device's raylib binding, so build the colour from RGB ints.
+    r, g, b = (255, 115, 0) if not self._show_wheel_critical and ui_state.nag_counting else (255, 255, 255)
+    color = rl.Color(r, g, b, int(self._wheel_alpha_filter.x))
     rl.draw_texture_pro(wheel_txt, src_rect, dest_rect, origin, rotation, color)
 
     if self._show_wheel_critical:
