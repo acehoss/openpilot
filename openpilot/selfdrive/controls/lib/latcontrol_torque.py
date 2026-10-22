@@ -49,6 +49,7 @@ class LatControlTorque(LatControl):
     self.lateral_accel_from_torque = CI.lateral_accel_from_torque()
     kp_scale = SUSW_KP_SCALE if CP.carFingerprint in SUSW_CARS else 1.0
     self.pid = PIDController([INTERP_SPEEDS, [k * kp_scale for k in KP_INTERP]], KI, rate=1/self.dt)
+    self.v_ego = 0.0
     self.update_limits()
     self.steering_angle_deadzone_deg = self.torque_params.steeringAngleDeadzoneDeg
     self.lat_accel_request_buffer_len = int(LAT_ACCEL_REQUEST_BUFFER_SECONDS / self.dt)
@@ -63,12 +64,15 @@ class LatControlTorque(LatControl):
     self.update_limits()
 
   def update_limits(self):
-    self.pid.set_limits(self.lateral_accel_from_torque(self.steer_max, self.torque_params),
-                        self.lateral_accel_from_torque(-self.steer_max, self.torque_params))
+    # Fork: the torque maps take the speed; the SUSW map is in curvature, so the lat-accel limits move with v^2 (#1879)
+    self.pid.set_limits(self.lateral_accel_from_torque(self.steer_max, self.torque_params, self.v_ego),
+                        self.lateral_accel_from_torque(-self.steer_max, self.torque_params, self.v_ego))
 
   def update(self, active, CS, VM, params, steer_limited_by_safety, desired_curvature, curvature_limited, lat_delay):
     pid_log = log.ControlsState.LateralTorqueState.new_message()
     pid_log.version = VERSION
+    self.v_ego = CS.vEgo
+    self.update_limits()
     measured_curvature = -VM.calc_curvature(math.radians(CS.steeringAngleDeg - params.angleOffsetDeg), CS.vEgo, params.roll)
     measurement = measured_curvature * CS.vEgo ** 2
     future_desired_lateral_accel = desired_curvature * CS.vEgo ** 2
@@ -101,7 +105,7 @@ class LatControlTorque(LatControl):
 
       freeze_integrator = steer_limited_by_safety or CS.steeringPressed or CS.vEgo < 5
       output_lataccel = self.pid.update(pid_log.error, speed=CS.vEgo, feedforward=ff, freeze_integrator=freeze_integrator)
-      output_torque = self.torque_from_lateral_accel(output_lataccel, self.torque_params)
+      output_torque = self.torque_from_lateral_accel(output_lataccel, self.torque_params, CS.vEgo)
 
       pid_log.active = True
       pid_log.p = float(self.pid.p)
