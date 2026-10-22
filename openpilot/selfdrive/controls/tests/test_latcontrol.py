@@ -12,8 +12,8 @@ from opendbc.car.chrysler.values import CAR as CHRYSLER
 from opendbc.car.vehicle_model import VehicleModel
 from openpilot.common.realtime import DT_CTRL
 from openpilot.selfdrive.controls.lib.latcontrol_pid import LatControlPID
-from openpilot.selfdrive.controls.lib.latcontrol_torque import (LatControlTorque, SUSW_KP_SCALE, STICTION_HOLD_TIME, STICTION_PULSE,
-                                                                 STICTION_PULSE_MAX_TIME, STICTION_REFRACTORY)
+from openpilot.selfdrive.controls.lib.latcontrol_torque import (LatControlTorque, SUSW_KP_SCALE, STICTION_ERROR_MIN_CURV, STICTION_HOLD_TIME,
+                                                                 STICTION_PULSE, STICTION_PULSE_MAX_TIME, STICTION_PULSE_SPEED, STICTION_REFRACTORY)
 from openpilot.selfdrive.controls.lib.latcontrol_angle import LatControlAngle
 
 
@@ -71,11 +71,11 @@ class TestLatControl:
       CP = CarInterface.get_non_essential_params(car_name)
       return LatControlTorque(CP.as_reader(), CarInterface(CP), DT_CTRL), VehicleModel(CP)
 
-    def run(ctrl, VM, n, rate=0.0, pressed=False, curvature=0.0004):  # 0.12 m/s2 at 17 m/s: above the error floor, command stays off the rail
+    def run(ctrl, VM, n, rate=0.0, pressed=False, curvature=0.0005, v_ego=17.):  # 0.5e-3 1/m: above the trigger, command stays off the rail
       out = []
       for _ in range(n):
         CS = car.CarState.new_message()
-        CS.vEgo = 17.
+        CS.vEgo = v_ego
         CS.steeringAngleDeg = 0.
         CS.steeringRateDeg = rate
         CS.steeringPressed = pressed
@@ -117,3 +117,12 @@ class TestLatControl:
     assert all(d == 0.0 for _, d in run(ctrl4, VM4, delay + hold * 3))
     # the pulse adds to the command and the sum stays within steer_max
     assert all(abs(tq) <= ctrl.steer_max + 1e-9 for tq, _ in first + pulsed + seq)
+    # the trigger is in curvature: the same curvature error at 28 m/s still pulses, with the amplitude scaled by (20/28)^2
+    ctrl5, VM5 = make(CHRYSLER.JEEP_RENEGADE)
+    seq5 = run(ctrl5, VM5, delay + hold + 10, v_ego=28.)
+    nz5 = [d for _, d in seq5 if d != 0.0]
+    assert nz5 and nz5[0] == pytest.approx(STICTION_PULSE * ctrl5.steer_max * (STICTION_PULSE_SPEED / 28.) ** 2, abs=1e-6)
+    # but a lat-accel error that is below the curvature trigger at 28 m/s (0.0005 * 17^2 / 28^2 ~ 0.18e-3 1/m) never pulses
+    ctrl6, VM6 = make(CHRYSLER.JEEP_RENEGADE)
+    assert all(d == 0.0 for _, d in run(ctrl6, VM6, delay + hold * 3, v_ego=28., curvature=0.0005 * 17. ** 2 / 28. ** 2))
+    assert 0.0005 * 17. ** 2 / 28. ** 2 < STICTION_ERROR_MIN_CURV < 0.0005

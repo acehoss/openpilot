@@ -49,13 +49,18 @@ SUSW_KP_SCALE = 0.6
 # STICTION_HOLD_TIME, add STICTION_PULSE on top of the command in the direction of the error, withdraw
 # it as soon as the column moves (or after STICTION_PULSE_MAX_TIME), then wait STICTION_REFRACTORY.
 # The pulse is logged in torqueState.d (unused by this controller otherwise). SUSW cars only.
-STICTION_ERROR_MIN = 0.08       # m/s2 of lat-accel error that counts as wanting to move
+# Drive 0000026f: with a 0.08 m/s2 lat-accel trigger the pulses fired 16/min at 63 mph (0.2e-3 1/m of
+# error there) and rang (half within 3 s of the previous, 45 % of those opposite); each 1.4 deg nudge at
+# that speed is a 0.5 m/s2 lateral step. So the trigger is in curvature, the amplitude falls with v^2
+# above STICTION_PULSE_SPEED, and the refractory is long enough for the loop to settle after a nudge.
+STICTION_ERROR_MIN_CURV = 0.30e-3  # 1/m of curvature error that counts as wanting to move (0.09 m/s2 at 17 m/s, 0.24 at 28); replay of 26f: ~2/min town, 0.6/min highway
 STICTION_STUCK_RATE = 3.0       # deg/s; the column counts as still below this
 STICTION_MOVING_RATE = 8.0      # deg/s; the pulse is withdrawn above this
 STICTION_HOLD_TIME = 0.5        # s still, with error, before a pulse
 STICTION_PULSE = 0.3            # of STEER_MAX (115 counts), on top of the command; slew applies it in ~230 ms
+STICTION_PULSE_SPEED = 20.0     # m/s; above this the amplitude scales by (STICTION_PULSE_SPEED / v)^2 (0.15 at 28 m/s)
 STICTION_PULSE_MAX_TIME = 0.4   # s
-STICTION_REFRACTORY = 0.5       # s after a pulse before the hold timer restarts
+STICTION_REFRACTORY = 1.5       # s after a pulse before the hold timer restarts
 
 class LatControlTorque(LatControl):
   def __init__(self, CP, CI, dt):
@@ -68,6 +73,7 @@ class LatControlTorque(LatControl):
     self.stuck_time = 0.0
     self.pulse_time = 0.0
     self.pulse_sign = 0.0
+    self.pulse_amp = 0.0
     self.refractory_time = 0.0
     self.pid = PIDController([INTERP_SPEEDS, [k * kp_scale for k in KP_INTERP]], KI, rate=1/self.dt)
     self.v_ego = 0.0
@@ -98,20 +104,22 @@ class LatControlTorque(LatControl):
         self.stuck_time = 0.0
         self.refractory_time = STICTION_REFRACTORY
         return 0.0
-      return self.pulse_sign * STICTION_PULSE * self.steer_max
+      return self.pulse_sign * self.pulse_amp
     if self.refractory_time > 0.0:
       self.refractory_time -= self.dt
       self.stuck_time = 0.0
       return 0.0
-    if abs(error) > STICTION_ERROR_MIN and rate < STICTION_STUCK_RATE and not CS.steeringPressed:
+    v_ego = max(abs(CS.vEgo), 1.0)
+    if abs(error) / v_ego ** 2 > STICTION_ERROR_MIN_CURV and rate < STICTION_STUCK_RATE and not CS.steeringPressed:
       self.stuck_time += self.dt
     else:
       self.stuck_time = 0.0
     if self.stuck_time >= STICTION_HOLD_TIME:
       self.stuck_time = 0.0
       self.pulse_sign = float(np.sign(error))
+      self.pulse_amp = STICTION_PULSE * self.steer_max * min(1.0, (STICTION_PULSE_SPEED / v_ego) ** 2)
       self.pulse_time = self.dt
-      return self.pulse_sign * STICTION_PULSE * self.steer_max
+      return self.pulse_sign * self.pulse_amp
     return 0.0
 
   def update(self, active, CS, VM, params, steer_limited_by_safety, desired_curvature, curvature_limited, lat_delay):
