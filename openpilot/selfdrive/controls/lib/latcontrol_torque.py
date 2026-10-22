@@ -41,6 +41,22 @@ VERSION = 1
 # feedforward are untouched, other cars are unaffected.
 SUSW_KP_SCALE = 0.6
 
+# Fork: SUSW stiction compensator (#1879). The Renegade column sits inside a wide hysteresis band: with a
+# persistent lateral-accel error the command climbs for seconds while the steering rate stays at zero,
+# then the column breaks free and overshoots. Measured on routes 00000265/266/26d/26e: holds of 1.5 s
+# median (p90 2-3 s), break-away at 0.4-0.7 of STEER_MAX, snaps of 2-6 deg. Hands on the wheel fix it
+# with a nudge. This does the nudge: once the error has persisted with the column still for
+# STICTION_HOLD_TIME, add STICTION_PULSE on top of the command in the direction of the error, withdraw
+# it as soon as the column moves (or after STICTION_PULSE_MAX_TIME), then wait STICTION_REFRACTORY.
+# The pulse is logged in torqueState.d (unused by this controller otherwise). SUSW cars only.
+STICTION_ERROR_MIN = 0.08       # m/s2 of lat-accel error that counts as wanting to move
+STICTION_STUCK_RATE = 3.0       # deg/s; the column counts as still below this
+STICTION_MOVING_RATE = 8.0      # deg/s; the pulse is withdrawn above this
+STICTION_HOLD_TIME = 0.5        # s still, with error, before a pulse
+STICTION_PULSE = 0.3            # of STEER_MAX (115 counts), on top of the command; slew applies it in ~230 ms
+STICTION_PULSE_MAX_TIME = 0.4   # s
+STICTION_REFRACTORY = 0.5       # s after a pulse before the hold timer restarts
+
 class LatControlTorque(LatControl):
   def __init__(self, CP, CI, dt):
     super().__init__(CP, CI, dt)
@@ -48,6 +64,11 @@ class LatControlTorque(LatControl):
     self.torque_from_lateral_accel = CI.torque_from_lateral_accel()
     self.lateral_accel_from_torque = CI.lateral_accel_from_torque()
     kp_scale = SUSW_KP_SCALE if CP.carFingerprint in SUSW_CARS else 1.0
+    self.stiction_comp = CP.carFingerprint in SUSW_CARS
+    self.stuck_time = 0.0
+    self.pulse_time = 0.0
+    self.pulse_sign = 0.0
+    self.refractory_time = 0.0
     self.pid = PIDController([INTERP_SPEEDS, [k * kp_scale for k in KP_INTERP]], KI, rate=1/self.dt)
     self.v_ego = 0.0
     self.update_limits()
@@ -67,6 +88,31 @@ class LatControlTorque(LatControl):
     # Fork: the torque maps take the speed; the SUSW map is in curvature, so the lat-accel limits move with v^2 (#1879)
     self.pid.set_limits(self.lateral_accel_from_torque(self.steer_max, self.torque_params, self.v_ego),
                         self.lateral_accel_from_torque(-self.steer_max, self.torque_params, self.v_ego))
+
+  def _stiction_pulse(self, CS, error):
+    rate = abs(CS.steeringRateDeg)
+    if self.pulse_time > 0.0:
+      self.pulse_time += self.dt
+      if rate > STICTION_MOVING_RATE or self.pulse_time > STICTION_PULSE_MAX_TIME or CS.steeringPressed:
+        self.pulse_time = 0.0
+        self.stuck_time = 0.0
+        self.refractory_time = STICTION_REFRACTORY
+        return 0.0
+      return self.pulse_sign * STICTION_PULSE * self.steer_max
+    if self.refractory_time > 0.0:
+      self.refractory_time -= self.dt
+      self.stuck_time = 0.0
+      return 0.0
+    if abs(error) > STICTION_ERROR_MIN and rate < STICTION_STUCK_RATE and not CS.steeringPressed:
+      self.stuck_time += self.dt
+    else:
+      self.stuck_time = 0.0
+    if self.stuck_time >= STICTION_HOLD_TIME:
+      self.stuck_time = 0.0
+      self.pulse_sign = float(np.sign(error))
+      self.pulse_time = self.dt
+      return self.pulse_sign * STICTION_PULSE * self.steer_max
+    return 0.0
 
   def update(self, active, CS, VM, params, steer_limited_by_safety, desired_curvature, curvature_limited, lat_delay):
     pid_log = log.ControlsState.LateralTorqueState.new_message()
@@ -99,6 +145,7 @@ class LatControlTorque(LatControl):
     if not active:
       output_torque = 0.0
       pid_log.active = False
+      self.stuck_time = self.pulse_time = self.refractory_time = 0.0
     else:
       # do error correction in lateral acceleration space, convert at end to handle non-linear torque responses correctly
       pid_log.error = float(error)
@@ -106,11 +153,13 @@ class LatControlTorque(LatControl):
       freeze_integrator = steer_limited_by_safety or CS.steeringPressed or CS.vEgo < 5
       output_lataccel = self.pid.update(pid_log.error, speed=CS.vEgo, feedforward=ff, freeze_integrator=freeze_integrator)
       output_torque = self.torque_from_lateral_accel(output_lataccel, self.torque_params, CS.vEgo)
+      pulse = self._stiction_pulse(CS, error) if self.stiction_comp else 0.0
+      output_torque = float(np.clip(output_torque + pulse, -self.steer_max, self.steer_max))
 
       pid_log.active = True
       pid_log.p = float(self.pid.p)
       pid_log.i = float(self.pid.i)
-      pid_log.d = float(self.pid.d)
+      pid_log.d = float(pulse)
       pid_log.f = float(self.pid.f)
       pid_log.output = float(-output_torque) # TODO: log lat accel?
       pid_log.actualLateralAccel = float(measurement)
