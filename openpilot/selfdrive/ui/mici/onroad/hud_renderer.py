@@ -33,7 +33,6 @@ class FontSizes:
 class Colors:
   WHITE = rl.WHITE
   WHITE_TRANSLUCENT = rl.Color(255, 255, 255, 200)
-  NAG_COUNTING = rl.Color(255, 115, 0, 255)  # the userPrompt / wheel_critical orange
 
 
 FONT_SIZES = FontSizes()
@@ -247,11 +246,8 @@ class HudRenderer(Widget):
     dest_rect = rl.Rectangle(pos_x, pos_y, wheel_txt.width, wheel_txt.height)
     origin = (wheel_txt.width / 2, wheel_txt.height / 2)
 
-    # color and draw. Fork (#1854): the plain wheel is tinted orange while the SUSW hands-off nag
-    # pre-warning is counting with calm torque, i.e. while the car is probably timing a nag.
-    # rl.WHITE is a plain tuple on the device's raylib binding, so build the colour from RGB ints.
-    r, g, b = (255, 115, 0) if not self._show_wheel_critical and ui_state.nag_counting else (255, 255, 255)
-    color = rl.Color(r, g, b, int(self._wheel_alpha_filter.x))
+    # color and draw
+    color = rl.Color(255, 255, 255, int(self._wheel_alpha_filter.x))
     rl.draw_texture_pro(wheel_txt, src_rect, dest_rect, origin, rotation, color)
 
     if self._show_wheel_critical:
