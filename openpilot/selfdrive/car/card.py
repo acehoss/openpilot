@@ -20,6 +20,7 @@ from opendbc.car.car_helpers import get_car, interfaces
 from opendbc.car.interfaces import CarInterfaceBase, RadarInterfaceBase
 from openpilot.selfdrive.pandad import can_capnp_to_list, can_list_to_can_capnp
 from openpilot.selfdrive.car.cruise import VCruiseHelper
+from openpilot.selfdrive.car.susw_lanesense import SuswLaneSenseParam
 
 REPLAY = "REPLAY" in os.environ
 
@@ -108,6 +109,9 @@ class Car:
       self.CI, self.CP = CI, CI.CP
       self.RI = RI
 
+    # fork: Chrysler SUSW LaneSense toggle, seeded from its Param before the first CarState update (#1899)
+    self.susw_lanesense = SuswLaneSenseParam(self.params, self.CI)
+
     self.CP.alternativeExperience = 0
     openpilot_enabled_toggle = self.params.get_bool("OpenpilotEnabledToggle")
     controller_available = self.CI.CC is not None and openpilot_enabled_toggle and not self.CP.dashcamOnly
@@ -165,6 +169,7 @@ class Car:
 
     # Update carState from CAN
     CS = self.CI.update(can_list)
+    self.susw_lanesense.update()
 
     # Update radar tracks from CAN
     RD: structs.RadarDataT | None = self.RI.update(can_list)
