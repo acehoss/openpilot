@@ -53,7 +53,7 @@ SUSW_KP_SCALE = 0.6
 # error there) and rang (half within 3 s of the previous, 45 % of those opposite); each 1.4 deg nudge at
 # that speed is a 0.5 m/s2 lateral step. So the trigger is in curvature, the amplitude falls with v^2
 # above STICTION_PULSE_SPEED, and the refractory is long enough for the loop to settle after a nudge.
-STICTION_ERROR_MIN_CURV = 0.30e-3  # 1/m of curvature error that counts as wanting to move (0.09 m/s2 at 17 m/s, 0.24 at 28); replay of 26f: ~2/min town, 0.6/min highway
+STICTION_ERROR_MIN_CURV = 0.30e-3  # 1/m of curvature error that counts as wanting to move (0.09 m/s2 at 17 m/s, 0.24 at 28)
 STICTION_STUCK_RATE = 3.0       # deg/s; the column counts as still below this
 STICTION_MOVING_RATE = 8.0      # deg/s; the pulse is withdrawn above this
 STICTION_HOLD_TIME = 0.5        # s still, with error, before a pulse
