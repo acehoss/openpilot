@@ -58,9 +58,18 @@ STICTION_STUCK_RATE = 3.0       # deg/s; the column counts as still below this
 STICTION_MOVING_RATE = 8.0      # deg/s; the pulse is withdrawn above this
 STICTION_HOLD_TIME = 0.5        # s still, with error, before a pulse
 STICTION_PULSE = 0.3            # of STEER_MAX (115 counts), on top of the command; slew applies it in ~230 ms
-STICTION_PULSE_SPEED = 20.0     # m/s; above this the amplitude scales by (STICTION_PULSE_SPEED / v)^2 (0.15 at 28 m/s)
+STICTION_PULSE_SPEED = 20.0     # m/s; above this the amplitude scales by (STICTION_PULSE_SPEED / v)^2
+STICTION_PULSE_MIN = 0.2        # of STEER_MAX; floor for the scaled amplitude (drive 00000270: at 0.15 half the pulses moved nothing)
 STICTION_PULSE_MAX_TIME = 0.4   # s
 STICTION_REFRACTORY = 1.5       # s after a pulse before the hold timer restarts
+
+# Fork: SUSW dither (#1879). A small triangle wave on top of the command keeps the column out of static
+# friction, the way a hand resting on the wheel does, so small requests produce small motions instead
+# of nothing-then-a-snap. Slope 2.8 counts per 10 ms frame, inside the 5/6 slew the car controller and
+# the panda enforce; 40 counts peak to peak is well under the panda's 180 counts per 250 ms. Logged in
+# torqueState.d together with the pulse (the pulse is >= 0.15, the dither <= 0.052, so they separate).
+DITHER_AMP = 20.0 / 383.0       # of STEER_MAX
+DITHER_HZ = 3.5
 
 class LatControlTorque(LatControl):
   def __init__(self, CP, CI, dt):
@@ -75,6 +84,8 @@ class LatControlTorque(LatControl):
     self.pulse_sign = 0.0
     self.pulse_amp = 0.0
     self.refractory_time = 0.0
+    self.dither_phase = 0.0
+    self.last_dither = 0.0
     self.pid = PIDController([INTERP_SPEEDS, [k * kp_scale for k in KP_INTERP]], KI, rate=1/self.dt)
     self.v_ego = 0.0
     self.update_limits()
@@ -117,10 +128,15 @@ class LatControlTorque(LatControl):
     if self.stuck_time >= STICTION_HOLD_TIME:
       self.stuck_time = 0.0
       self.pulse_sign = float(np.sign(error))
-      self.pulse_amp = STICTION_PULSE * self.steer_max * min(1.0, (STICTION_PULSE_SPEED / v_ego) ** 2)
+      self.pulse_amp = self.steer_max * max(STICTION_PULSE_MIN, STICTION_PULSE * min(1.0, (STICTION_PULSE_SPEED / v_ego) ** 2))
       self.pulse_time = self.dt
       return self.pulse_sign * self.pulse_amp
     return 0.0
+
+  def _dither(self):
+    self.dither_phase = (self.dither_phase + DITHER_HZ * self.dt) % 1.0
+    self.last_dither = DITHER_AMP * self.steer_max * (4.0 * abs(self.dither_phase - 0.5) - 1.0)
+    return self.last_dither
 
   def update(self, active, CS, VM, params, steer_limited_by_safety, desired_curvature, curvature_limited, lat_delay):
     pid_log = log.ControlsState.LateralTorqueState.new_message()
@@ -154,6 +170,7 @@ class LatControlTorque(LatControl):
       output_torque = 0.0
       pid_log.active = False
       self.stuck_time = self.pulse_time = self.refractory_time = 0.0
+      self.last_dither = 0.0
     else:
       # do error correction in lateral acceleration space, convert at end to handle non-linear torque responses correctly
       pid_log.error = float(error)
@@ -161,19 +178,22 @@ class LatControlTorque(LatControl):
       freeze_integrator = steer_limited_by_safety or CS.steeringPressed or CS.vEgo < 5
       output_lataccel = self.pid.update(pid_log.error, speed=CS.vEgo, feedforward=ff, freeze_integrator=freeze_integrator)
       output_torque = self.torque_from_lateral_accel(output_lataccel, self.torque_params, CS.vEgo)
+      base_torque = output_torque
       pulse = self._stiction_pulse(CS, error) if self.stiction_comp else 0.0
-      output_torque = float(np.clip(output_torque + pulse, -self.steer_max, self.steer_max))
+      dither = self._dither() if self.stiction_comp else 0.0
+      output_torque = float(np.clip(base_torque + pulse + dither, -self.steer_max, self.steer_max))
 
       pid_log.active = True
       pid_log.p = float(self.pid.p)
       pid_log.i = float(self.pid.i)
-      pid_log.d = float(pulse)
+      pid_log.d = float(pulse + dither)
       pid_log.f = float(self.pid.f)
       pid_log.output = float(-output_torque) # TODO: log lat accel?
       pid_log.actualLateralAccel = float(measurement)
       pid_log.desiredLateralAccel = float(setpoint)
       pid_log.desiredLateralJerk = float(desired_lateral_jerk)
-      pid_log.saturated = bool(self._check_saturation(self.steer_max - abs(output_torque) < 1e-3, CS, steer_limited_by_safety, curvature_limited))
+      # saturation is judged on the controller's own command; the dither and pulse ride on top of it
+      pid_log.saturated = bool(self._check_saturation(self.steer_max - abs(base_torque) < 1e-3, CS, steer_limited_by_safety, curvature_limited))
 
     # TODO left is positive in this convention
     return -output_torque, 0.0, pid_log
