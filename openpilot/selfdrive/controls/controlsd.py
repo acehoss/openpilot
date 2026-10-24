@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import math
+from collections import deque
 from numbers import Number
 
 from openpilot.cereal import log
@@ -9,6 +10,8 @@ from openpilot.common.constants import CV
 from openpilot.common.params import Params
 from openpilot.common.realtime import config_realtime_process, DT_CTRL, Priority, Ratekeeper
 from openpilot.common.swaglog import cloudlog
+from opendbc.car.chrysler.values import SUSW_CARS
+from openpilot.selfdrive.controls.lib.drive_helpers import output_follows_command
 
 from opendbc.car.car_helpers import interfaces
 from opendbc.car.vehicle_model import VehicleModel
@@ -44,6 +47,7 @@ class Controls:
     self.pm = messaging.PubMaster(['carControl', 'controlsState'])
 
     self.steer_limited_by_safety = False
+    self.torque_cmd_history = deque([0.0] * 3, maxlen=3)  # Fork (#1879): last three commands, see output_follows_command
     self.curvature = 0.0
     self.desired_curvature = 0.0
     self.below_steer_speed = False
@@ -193,8 +197,12 @@ class Controls:
       if self.CP.steerControlType == car.CarParams.SteerControlType.angle:
         self.steer_limited_by_safety = abs(CC.actuators.steeringAngleDeg - CO.actuatorsOutput.steeringAngleDeg) > \
                                               STEER_ANGLE_SATURATION_THRESHOLD
+      elif self.CP.carFingerprint in SUSW_CARS:
+        # Fork (#1879): judge limiting against the command the output answers (1-3 frames old), not the newest one
+        self.steer_limited_by_safety = not output_follows_command(self.torque_cmd_history, CO.actuatorsOutput.torque, 1e-2)
       else:
         self.steer_limited_by_safety = abs(CC.actuators.torque - CO.actuatorsOutput.torque) > 1e-2
+    self.torque_cmd_history.append(CC.actuators.torque)
 
     # TODO: both controlsState and carControl valids should be set by
     #       sm.all_checks(), but this creates a circular dependency

@@ -3,6 +3,14 @@ from openpilot.common.constants import ACCELERATION_DUE_TO_GRAVITY
 from openpilot.common.realtime import DT_CTRL, DT_MDL
 
 MIN_SPEED = 1.0
+
+
+def output_follows_command(command_history, output, tol):
+  # Fork (#1879): carOutput answers a carControl from one to three frames ago, not the one just computed.
+  # Comparing the newest command with the newest output reports "limited" whenever the command merely moves,
+  # which on the SUSW build froze the torque integrator on 75 % of frames. The output follows the command if
+  # it matches any recent command within tol; it is limited only when it matches none of them.
+  return any(abs(c - output) <= tol for c in command_history)
 CONTROL_N = 17
 # This is a turn radius smaller than most cars can achieve
 MAX_CURVATURE = 0.2
