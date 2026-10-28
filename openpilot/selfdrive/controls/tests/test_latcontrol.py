@@ -16,7 +16,8 @@ from opendbc.car.vehicle_model import VehicleModel
 from openpilot.common.realtime import DT_CTRL
 from openpilot.selfdrive.controls.lib.latcontrol_pid import LatControlPID
 from openpilot.selfdrive.controls.lib.drive_helpers import output_follows_command
-from openpilot.selfdrive.controls.lib.latcontrol_torque import (LatControlTorque, SUSW_KP_SCALE, STICTION_ERROR_MIN_CURV, STICTION_HOLD_TIME,
+from openpilot.selfdrive.controls.lib.latcontrol_torque import (LatControlTorque, SUSW_KP_SCALE, SUSW_KI_UNWIND_SCALE, STICTION_TRIGGER_TAU,
+                                                                 STICTION_PULSE_STEP, STICTION_PULSE_MAX, STICTION_ERROR_MIN_CURV, STICTION_HOLD_TIME,
                                                                  STICTION_PULSE, STICTION_PULSE_MAX_TIME, STICTION_PULSE_MIN, STICTION_PULSE_SPEED,
                                                                  STICTION_REFRACTORY)
 from openpilot.selfdrive.controls.lib.latcontrol_angle import LatControlAngle
@@ -96,7 +97,13 @@ class TestLatControl(OpenpilotTestCase):
     delay = int(0.2 / DT_CTRL) + 1  # the setpoint reaches the controller through the lat-delay buffer
     first = run(ctrl, VM, delay + hold - 5)
     assert all(abs(d) < 1e-6 for _, d in first)
-    pulsed = run(ctrl, VM, 15)
+    # the trigger reads a low-passed error, so a step takes about STICTION_TRIGGER_TAU to count; stop a few frames into the pulse
+    pulsed = []
+    for _ in range(15 + 2 * int(STICTION_TRIGGER_TAU / DT_CTRL)):
+      pulsed += run(ctrl, VM, 1)
+      if abs(pulsed[-1][1]) > 1e-3:
+        break
+    pulsed += run(ctrl, VM, 3)
     nz = [d for _, d in pulsed if abs(d) > 1e-3]
     assert nz and nz[0] == pytest.approx(STICTION_PULSE * ctrl.steer_max, abs=1e-6)  # error positive -> pulse positive, same sign as the PID torque
     # the pulse adds to the command (controller returns -output_torque, so the returned torque steps by -pulse)
@@ -126,13 +133,88 @@ class TestLatControl(OpenpilotTestCase):
     assert all(abs(tq) <= ctrl.steer_max + 1e-9 for tq, _ in first + pulsed + seq)
     # the trigger is in curvature: the same curvature error at 28 m/s still pulses, with the amplitude scaled by (20/28)^2
     ctrl5, VM5 = make(CHRYSLER.JEEP_RENEGADE)
-    seq5 = run(ctrl5, VM5, delay + hold + 10, v_ego=28.)
+    seq5 = run(ctrl5, VM5, delay + hold + 10 + 2 * int(STICTION_TRIGGER_TAU / DT_CTRL), v_ego=28.)
     nz5 = [d for _, d in seq5 if abs(d) > 1e-3]
     assert nz5 and nz5[0] == pytest.approx(ctrl5.steer_max * max(STICTION_PULSE_MIN, STICTION_PULSE * (STICTION_PULSE_SPEED / 28.) ** 2), abs=1e-6)
     # but a lat-accel error that is below the curvature trigger at 28 m/s (0.0005 * 17^2 / 28^2 ~ 0.18e-3 1/m) never pulses
     ctrl6, VM6 = make(CHRYSLER.JEEP_RENEGADE)
     assert all(abs(d) < 1e-6 for _, d in run(ctrl6, VM6, delay + hold * 3, v_ego=28., curvature=0.0005 * 17. ** 2 / 28. ** 2))
     assert 0.0005 * 17. ** 2 / 28. ** 2 < STICTION_ERROR_MIN_CURV < 0.0005
+
+  def test_susw_integrator_unwind(self):
+    # Fork (#1879): on SUSW cars the integral shrinks SUSW_KI_UNWIND_SCALE times faster than it grows; other cars are unchanged
+    def make(car_name):
+      CarInterface = interfaces[car_name]
+      CP = CarInterface.get_non_essential_params(car_name)
+      return LatControlTorque(CP.as_reader(), CarInterface(CP), DT_CTRL), VehicleModel(CP)
+
+    def step(ctrl, VM, angle_deg, n, v_ego=30.):
+      for _ in range(n):
+        CS = car.CarState.new_message()
+        CS.vEgo = v_ego
+        CS.steeringAngleDeg = angle_deg
+        params = log.LiveParametersData.new_message()
+        ctrl.update(True, CS, VM, params, False, 0.0, False, 0.2)
+      return ctrl.pid.i
+
+    for car_name, scale in ((CHRYSLER.JEEP_RENEGADE, SUSW_KI_UNWIND_SCALE), (TOYOTA.TOYOTA_RAV4, 1.0)):
+      ctrl, VM = make(car_name)
+      # desired 0, a held steering angle gives a constant measurement, so a constant error of one sign
+      i_wound = step(ctrl, VM, 2.0, 100)
+      assert abs(i_wound) > 1e-4
+      i1 = step(ctrl, VM, 2.0, 1)
+      wind_rate = abs(i1 - i_wound)
+      # flip the measurement: the error now opposes the integral
+      i2 = step(ctrl, VM, -2.0, 1)
+      i3 = step(ctrl, VM, -2.0, 1)
+      unwind_rate = abs(i3 - i2)
+      assert abs(i3) < abs(i2)
+      assert unwind_rate / wind_rate == pytest.approx(scale, rel=0.05)
+
+  def test_susw_pulse_escalation(self):
+    # Fork (#1879): at highway speed a pulse that does not move the column is followed by a bigger one, up to STICTION_PULSE_MAX;
+    # a column move resets the escalation. The trigger reads a filtered error, so an error that flickers around the threshold still fires.
+    def make(car_name):
+      CarInterface = interfaces[car_name]
+      CP = CarInterface.get_non_essential_params(car_name)
+      return LatControlTorque(CP.as_reader(), CarInterface(CP), DT_CTRL), VehicleModel(CP)
+
+    def run(ctrl, VM, n, rate=0.0, curvature=0.0005, v_ego=30., alternate=False):
+      out = []
+      for k in range(n):
+        CS = car.CarState.new_message()
+        CS.vEgo = v_ego
+        CS.steeringRateDeg = rate
+        params = log.LiveParametersData.new_message()
+        c = curvature * (0.2 if (alternate and k % 2) else 1.8 if alternate else 1.0)
+        _, _, lac_log = ctrl.update(True, CS, VM, params, False, c, False, 0.2)
+        out.append(lac_log.d)
+      return out
+
+    def pulses(seq):
+      amps, prev = [], 0.0
+      for d in seq:
+        if abs(d) > 1e-3 and abs(prev) < 1e-3:
+          amps.append(abs(d))
+        prev = d
+      return amps
+
+    ctrl, VM = make(CHRYSLER.JEEP_RENEGADE)
+    period = int((STICTION_HOLD_TIME + STICTION_PULSE_MAX_TIME + STICTION_REFRACTORY) / DT_CTRL) + 10
+    amps = pulses(run(ctrl, VM, int(0.2 / DT_CTRL) + 1 + 5 * period))
+    assert len(amps) >= 4
+    sm = ctrl.steer_max
+    assert amps[0] == pytest.approx(STICTION_PULSE_MIN * sm, abs=1e-6)
+    assert amps[1] == pytest.approx((STICTION_PULSE_MIN + STICTION_PULSE_STEP) * sm, abs=1e-6)
+    assert amps[2] == pytest.approx((STICTION_PULSE_MIN + 2 * STICTION_PULSE_STEP) * sm, abs=1e-6)
+    assert max(amps) <= STICTION_PULSE_MAX * sm + 1e-6
+    # the column moves: escalation resets to the floor
+    run(ctrl, VM, 3, rate=20.)
+    amps2 = pulses(run(ctrl, VM, 2 * period))
+    assert amps2 and amps2[0] == pytest.approx(STICTION_PULSE_MIN * sm, abs=1e-6)
+    # flickering error (0.2x / 1.8x the curvature on alternate frames) still triggers through the filter
+    ctrl3, VM3 = make(CHRYSLER.JEEP_RENEGADE)
+    assert pulses(run(ctrl3, VM3, int(0.2 / DT_CTRL) + 1 + period, alternate=True))
 
   def test_output_follows_command(self):
     # Fork (#1879): the output answers a command 1-3 frames old. A command that merely moves (slew-limited ramp of 5 counts
