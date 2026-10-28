@@ -62,6 +62,20 @@ STICTION_PULSE_SPEED = 20.0     # m/s; above this the amplitude scales by (STICT
 STICTION_PULSE_MIN = 0.2        # of STEER_MAX; floor for the scaled amplitude (drive 00000270: at 0.15 half the pulses moved nothing)
 STICTION_PULSE_MAX_TIME = 0.4   # s
 STICTION_REFRACTORY = 1.5       # s after a pulse before the hold timer restarts
+# Drive home 2026-10-26 (routes 0000027f/282/284, 73 mph): after a long bend the integrator sits at 0.3-0.7 m/s2
+# and the command is a hysteresis band short of what moves the column. The error hovers around the trigger, so the
+# hold timer kept resetting (3 pulses in 14 s on 27f seg 34), and the 0.2 floor pulse never cracked the column at
+# 76 mph. So: the trigger reads a low-passed error, and each pulse that ends without the column moving raises the
+# next one by STICTION_PULSE_STEP up to STICTION_PULSE_MAX; a column move resets the escalation.
+STICTION_TRIGGER_TAU = 0.3      # s; low-pass on the error that feeds the trigger (not on the pulse direction sign)
+STICTION_PULSE_STEP = 0.05      # of STEER_MAX, added per consecutive pulse that did not move the column
+STICTION_PULSE_MAX = 0.3        # of STEER_MAX; escalation cap (= the town-speed amplitude)
+
+# Fork: SUSW integrator unwind (#1879). On the same drive the integral, wound up over a 10-20 s bend, took 7-15 s to
+# unwind at KI after the exit while the car drifted 0.5 m (median of 38 exits, p90 0.75 m) toward the bend side.
+# When the error opposes the integral the integral only shrinks, so a higher gain there cannot wind up; it scales
+# KI by SUSW_KI_UNWIND_SCALE on those frames only. SUSW cars only.
+SUSW_KI_UNWIND_SCALE = 3.0
 
 
 class LatControlTorque(LatControl):
@@ -77,6 +91,8 @@ class LatControlTorque(LatControl):
     self.pulse_sign = 0.0
     self.pulse_amp = 0.0
     self.refractory_time = 0.0
+    self.pulse_misses = 0
+    self.trigger_filter = FirstOrderFilter(0.0, STICTION_TRIGGER_TAU, dt)
     self.pid = PIDController([INTERP_SPEEDS, [k * kp_scale for k in KP_INTERP]], KI, rate=1/self.dt)
     self.v_ego = 0.0
     self.update_limits()
@@ -99,9 +115,14 @@ class LatControlTorque(LatControl):
 
   def _stiction_pulse(self, CS, error):
     rate = abs(CS.steeringRateDeg)
+    error_f = self.trigger_filter.update(error)
+    if rate > STICTION_MOVING_RATE:
+      self.pulse_misses = 0
     if self.pulse_time > 0.0:
       self.pulse_time += self.dt
       if rate > STICTION_MOVING_RATE or self.pulse_time > STICTION_PULSE_MAX_TIME or CS.steeringPressed:
+        if rate <= STICTION_MOVING_RATE and not CS.steeringPressed:
+          self.pulse_misses += 1
         self.pulse_time = 0.0
         self.stuck_time = 0.0
         self.refractory_time = STICTION_REFRACTORY
@@ -112,14 +133,15 @@ class LatControlTorque(LatControl):
       self.stuck_time = 0.0
       return 0.0
     v_ego = max(abs(CS.vEgo), 1.0)
-    if abs(error) / v_ego ** 2 > STICTION_ERROR_MIN_CURV and rate < STICTION_STUCK_RATE and not CS.steeringPressed:
+    if abs(error_f) / v_ego ** 2 > STICTION_ERROR_MIN_CURV and rate < STICTION_STUCK_RATE and not CS.steeringPressed:
       self.stuck_time += self.dt
     else:
       self.stuck_time = 0.0
     if self.stuck_time >= STICTION_HOLD_TIME:
       self.stuck_time = 0.0
-      self.pulse_sign = float(np.sign(error))
-      self.pulse_amp = self.steer_max * max(STICTION_PULSE_MIN, STICTION_PULSE * min(1.0, (STICTION_PULSE_SPEED / v_ego) ** 2))
+      self.pulse_sign = float(np.sign(error_f))
+      base = max(STICTION_PULSE_MIN, STICTION_PULSE * min(1.0, (STICTION_PULSE_SPEED / v_ego) ** 2))
+      self.pulse_amp = self.steer_max * min(STICTION_PULSE_MAX, base + self.pulse_misses * STICTION_PULSE_STEP)
       self.pulse_time = self.dt
       return self.pulse_sign * self.pulse_amp
     return 0.0
@@ -156,12 +178,16 @@ class LatControlTorque(LatControl):
       output_torque = 0.0
       pid_log.active = False
       self.stuck_time = self.pulse_time = self.refractory_time = 0.0
+      self.pulse_misses = 0
+      self.trigger_filter.x = 0.0
     else:
       # do error correction in lateral acceleration space, convert at end to handle non-linear torque responses correctly
       pid_log.error = float(error)
 
       freeze_integrator = steer_limited_by_safety or CS.steeringPressed or CS.vEgo < 5
-      output_lataccel = self.pid.update(pid_log.error, speed=CS.vEgo, feedforward=ff, freeze_integrator=freeze_integrator)
+      unwinding = self.stiction_comp and self.pid.i * error < 0
+      output_lataccel = self.pid.update(pid_log.error, speed=CS.vEgo, feedforward=ff, freeze_integrator=freeze_integrator,
+                                       i_gain_scale=SUSW_KI_UNWIND_SCALE if unwinding else 1.0)
       output_torque = self.torque_from_lateral_accel(output_lataccel, self.torque_params, CS.vEgo)
       base_torque = output_torque
       pulse = self._stiction_pulse(CS, error) if self.stiction_comp else 0.0
