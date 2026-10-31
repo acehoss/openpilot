@@ -54,6 +54,11 @@ SUSW_KP_SCALE = 0.6
 # that speed is a 0.5 m/s2 lateral step. So the trigger is in curvature, the amplitude falls with v^2
 # above STICTION_PULSE_SPEED, and the refractory is long enough for the loop to settle after a nudge.
 STICTION_ERROR_MIN_CURV = 0.30e-3  # 1/m of curvature error that counts as wanting to move (0.09 m/s2 at 17 m/s, 0.24 at 28)
+# Build C drives 2026-10-30 (#1879): at 78 mph a bend sat 4 s with the column still and 0.25-0.36 m/s2 of error,
+# under the 0.365 m/s2 the curvature trigger works out to there, so no pulse came and the car ran 0.78 m wide.
+# Above STICTION_TRIGGER_SPEEDS[0] the trigger eases to STICTION_ERROR_MIN_CURV_FAST (0.20 m/s2 at 32 m/s).
+STICTION_TRIGGER_SPEEDS = [25.0, 32.0]  # m/s
+STICTION_ERROR_MIN_CURV_FAST = 0.20e-3  # 1/m, the trigger at and above STICTION_TRIGGER_SPEEDS[1]
 STICTION_STUCK_RATE = 3.0       # deg/s; the column counts as still below this
 STICTION_MOVING_RATE = 8.0      # deg/s; the pulse is withdrawn above this
 STICTION_HOLD_TIME = 0.5        # s still, with error, before a pulse
@@ -133,7 +138,8 @@ class LatControlTorque(LatControl):
       self.stuck_time = 0.0
       return 0.0
     v_ego = max(abs(CS.vEgo), 1.0)
-    if abs(error_f) / v_ego ** 2 > STICTION_ERROR_MIN_CURV and rate < STICTION_STUCK_RATE and not CS.steeringPressed:
+    trigger = np.interp(v_ego, STICTION_TRIGGER_SPEEDS, [STICTION_ERROR_MIN_CURV, STICTION_ERROR_MIN_CURV_FAST])
+    if abs(error_f) / v_ego ** 2 > trigger and rate < STICTION_STUCK_RATE and not CS.steeringPressed:
       self.stuck_time += self.dt
     else:
       self.stuck_time = 0.0

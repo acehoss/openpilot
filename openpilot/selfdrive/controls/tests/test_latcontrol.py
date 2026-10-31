@@ -17,7 +17,8 @@ from openpilot.common.realtime import DT_CTRL
 from openpilot.selfdrive.controls.lib.latcontrol_pid import LatControlPID
 from openpilot.selfdrive.controls.lib.drive_helpers import output_follows_command
 from openpilot.selfdrive.controls.lib.latcontrol_torque import (LatControlTorque, SUSW_KP_SCALE, SUSW_KI_UNWIND_SCALE, STICTION_TRIGGER_TAU,
-                                                                 STICTION_PULSE_STEP, STICTION_PULSE_MAX, STICTION_ERROR_MIN_CURV, STICTION_HOLD_TIME,
+                                                                 STICTION_PULSE_STEP, STICTION_PULSE_MAX, STICTION_ERROR_MIN_CURV, STICTION_ERROR_MIN_CURV_FAST,
+                                                                 STICTION_TRIGGER_SPEEDS, STICTION_HOLD_TIME,
                                                                  STICTION_PULSE, STICTION_PULSE_MAX_TIME, STICTION_PULSE_MIN, STICTION_PULSE_SPEED,
                                                                  STICTION_REFRACTORY)
 from openpilot.selfdrive.controls.lib.latcontrol_angle import LatControlAngle
@@ -215,6 +216,33 @@ class TestLatControl(OpenpilotTestCase):
     # flickering error (0.2x / 1.8x the curvature on alternate frames) still triggers through the filter
     ctrl3, VM3 = make(CHRYSLER.JEEP_RENEGADE)
     assert pulses(run(ctrl3, VM3, int(0.2 / DT_CTRL) + 1 + period, alternate=True))
+
+  def test_susw_trigger_eases_with_speed(self):
+    # Fork (#1879): a curvature error between the fast and slow triggers pulses at highway speed but not at town speed
+    def make(car_name):
+      CarInterface = interfaces[car_name]
+      CP = CarInterface.get_non_essential_params(car_name)
+      return LatControlTorque(CP.as_reader(), CarInterface(CP), DT_CTRL), VehicleModel(CP)
+
+    def pulsed(v_ego, curvature):
+      ctrl, VM = make(CHRYSLER.JEEP_RENEGADE)
+      n = int(0.2 / DT_CTRL) + 1 + int(STICTION_HOLD_TIME / DT_CTRL) + 60
+      for _ in range(n):
+        CS = car.CarState.new_message()
+        CS.vEgo = v_ego
+        params = log.LiveParametersData.new_message()
+        _, _, lac_log = ctrl.update(True, CS, VM, params, False, curvature, False, 0.2)
+        if abs(lac_log.d) > 1e-3:
+          return True
+      return False
+
+    between = 0.5 * (STICTION_ERROR_MIN_CURV + STICTION_ERROR_MIN_CURV_FAST)
+    assert STICTION_ERROR_MIN_CURV_FAST < between < STICTION_ERROR_MIN_CURV
+    assert not pulsed(17., between)                              # town: under the slow trigger
+    assert not pulsed(STICTION_TRIGGER_SPEEDS[0], between)       # at the knee, still the slow trigger
+    assert pulsed(STICTION_TRIGGER_SPEEDS[1], between)           # highway: over the eased trigger
+    assert pulsed(STICTION_TRIGGER_SPEEDS[1] + 3., between)
+    assert not pulsed(STICTION_TRIGGER_SPEEDS[1], 0.9 * STICTION_ERROR_MIN_CURV_FAST)
 
   def test_output_follows_command(self):
     # Fork (#1879): the output answers a command 1-3 frames old. A command that merely moves (slew-limited ramp of 5 counts
