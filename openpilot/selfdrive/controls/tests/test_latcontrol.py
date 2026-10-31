@@ -88,7 +88,7 @@ class TestLatControl(OpenpilotTestCase):
         CS.steeringAngleDeg = 0.
         CS.steeringRateDeg = rate
         CS.steeringPressed = pressed
-        params = log.LiveParametersData.new_message()
+        params = log.VehicleParameters.new_message()
         torque, _, lac_log = ctrl.update(True, CS, VM, params, False, curvature, False, 0.2)
         out.append((torque, lac_log.d))
       return out
@@ -154,7 +154,7 @@ class TestLatControl(OpenpilotTestCase):
         CS = car.CarState.new_message()
         CS.vEgo = v_ego
         CS.steeringAngleDeg = angle_deg
-        params = log.LiveParametersData.new_message()
+        params = log.VehicleParameters.new_message()
         ctrl.update(True, CS, VM, params, False, 0.0, False, 0.2)
       return ctrl.pid.i
 
@@ -186,7 +186,7 @@ class TestLatControl(OpenpilotTestCase):
         CS = car.CarState.new_message()
         CS.vEgo = v_ego
         CS.steeringRateDeg = rate
-        params = log.LiveParametersData.new_message()
+        params = log.VehicleParameters.new_message()
         c = curvature * (0.2 if (alternate and k % 2) else 1.8 if alternate else 1.0)
         _, _, lac_log = ctrl.update(True, CS, VM, params, False, c, False, 0.2)
         out.append(lac_log.d)
@@ -230,7 +230,7 @@ class TestLatControl(OpenpilotTestCase):
       for _ in range(n):
         CS = car.CarState.new_message()
         CS.vEgo = v_ego
-        params = log.LiveParametersData.new_message()
+        params = log.VehicleParameters.new_message()
         _, _, lac_log = ctrl.update(True, CS, VM, params, False, curvature, False, 0.2)
         if abs(lac_log.d) > 1e-3:
           return True
