@@ -38,6 +38,33 @@ Quick start: `bash <(curl -fsSL openpilot.comma.ai)`
 </table>
 
 
+This fork: openpilot on a 2023 Jeep Renegade
+------
+
+This is [acehoss/openpilot](https://github.com/acehoss/openpilot), a fork that adds lateral
+control for the 2023 Jeep Renegade, the first openpilot port on FCA's small-wide (SUSW) platform.
+It is openpilot v0.11.2, with upstream master's build of the big driving model, plus:
+
+- A `chrysler_susw` platform in `opendbc/car/chrysler/`, a `chrysler_susw.dbc` built from the car's
+  own captures, and a driver-torque-limited `chrysler_susw` panda safety mode (opendbc fork branch
+  `chrysler-smallwide`).
+- A Red Panda gateway firmware target, `panda_gateway_h7`, that sits inline on CAN C and copies
+  the stock ACC state onto the private radar link where the comma four can see it (panda fork
+  branch `renegade`). Without it, openpilot at the camera cannot tell whether cruise is engaged.
+- Changes to openpilot itself in nine source files: hysteresis on `latActive` at `minSteerSpeed`
+  in `controlsd.py`, lateral tuning for this car's EPS in `latcontrol_torque.py`, and openpilot's
+  own LaneSense toggle.
+- Lateral only, on top of the stock ACC. It engages when the enable toggle is on, ACC is set and
+  LaneSense is on.
+
+Four coding agents built the port in a one-day competition. Three EPS faults on the road then
+showed what the Renegade's steering ECU requires of a sender. The whole story, with the dead ends,
+the bench numbers and the CAN findings, is in [worklog/](worklog/README.md). The coding agent
+wrote it from the project's session history. Aaron has read the summary and has not reviewed
+every page.
+
+Nothing here is upstreamed. Do not run this fork on any other car.
+
 Using openpilot in a car
 ------
 
