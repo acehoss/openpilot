@@ -6,9 +6,9 @@
 
 openpilot is open-source driver assistance that runs on a comma four, a small camera-and-computer
 box at the windshield. It supports about 300 cars. The 2023 Jeep Renegade was not one of them, and
-neither was anything else on its platform. Eight weeks after the first session, having started
-with no access to the car's data at all, it was steering itself on the highway. The long version
-is [porting-the-renegade](porting-the-renegade.md).
+neither was anything else on its platform. The project started with no access to the car's data
+at all, and after a handful of days of work spread over about eight weeks the car was steering
+itself on the highway. The long version is [porting-the-renegade](porting-the-renegade.md).
 
 ## Why this car was hard
 

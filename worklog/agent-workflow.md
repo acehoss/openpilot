@@ -8,8 +8,9 @@ Two of the three road faults on this project happened after every host-side chec
 3,283 safety tests at 100 percent line coverage, static analysis, a mutation run with every mutant
 killed. The agents had implemented the designs correctly, and the checks confirmed that the code
 matched the design. Both times the car rejected an assumption the design had made. This page
-covers eight weeks of porting openpilot to a Jeep with coding agents doing most of the typing:
-what they were held to, where they were wrong, and what caught it. The technical story is in
+covers the port of openpilot to a Jeep, a handful of days of work spread over about eight weeks,
+with coding agents doing most of the typing: what they were held to, where they were wrong, and
+what caught it. The technical story is in
 [porting-the-renegade](porting-the-renegade.md).
 
 Some orientation for readers who are not automotive people. openpilot is open-source driver
